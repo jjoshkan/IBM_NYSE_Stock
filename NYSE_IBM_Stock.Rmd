@@ -1,7 +1,6 @@
 ---
-title: "Project 2"
+title: "NYSE_IBM_Stock"
 author: "FNU Joshua, Angela Li, Sabrina Tsai"
-due date: "06/04/2020"
 output: html_document
 ---
 
