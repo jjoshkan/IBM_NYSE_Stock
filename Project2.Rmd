@@ -1,0 +1,393 @@
+---
+title: "Project 2"
+author: "FNU Joshua, Angela Li, Sabrina Tsai"
+due date: "06/04/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# I. Introduction
+We will look at data from the New York Stock Exchange Composite Index (NYA) and IBM returns (IBM) from 1970 to 2018. The NYSE is a stock exchange based in New York City, which conducts equity trading. The NYA is a composite index of the NYSE which reflects the value of all stocks traded by the NYSE. IBM is an America-based, multinational technology company that deals broadly with technology, from artificial intelligence to computer hardware. IBM became publicly traded in 1911 and its stock trades on the NYSE. The performance of NYA will most likely have an effect on IBM, and vice versa since IBM is traded on the NYSE. We will fit a forecasting model for IBM stock using NYA.  
+
+We chose to look at data up until 2018 because we want to focus on the correlation between IBM and NYSE before the worldwide coronavirus pandemic took over.  Initially looking at IBM’s data, we see the largest jumps taking place around the late 1990s and early 2010s, and has been slightly decreasing over the past five years.  IBM’s peak price took place around 2013. The NYSE is generally exhibiting similar trends to IBM, as it has sharp dips around the early 2000s and late 2000s just like IBM.  The NYSE’s peaks though occurred around the turn of the century and 2007 prior to the 2008 financial crisis.  The NYSE has been increasing in value ever since 2009.  While IBM follows a similar trend as the NYSE, IBM appears to not be close to its peak stock price in the late 2010s, unlike the NYSE.  The 2010s overall appear to show the biggest disparity between the trend of IBM’s stock price and the value of the NYSE.
+
+# II. Results
+Import library
+```{r}
+library(quantmod)
+library(timeSeries)
+library(forecast)
+library(ggplot2)
+library(vars)
+library(lmtest)
+library(timeSeries)
+library(rugarch)
+```
+
+## Modeling and Forecasting Trend, Seasonality, and Cycles
+```{r}
+#use getSymbols function to get NYSE and Accenture daily stock
+nyse <- getSymbols(Symbols = "^NYA", auto.assign = FALSE, from = "1970-01-01", to = "2019-12-31")[,6]
+ibm <- getSymbols(Symbols = "IBM", auto.assign = FALSE, from = "1970-01-01", to = "2019-12-31")[,6]
+
+#convert to weekly data since we want to analyze monthly return stock data
+nyse <- to.monthly(x = nyse)[,4]
+ibm <- to.monthly(x = ibm)[,4]
+
+#convert again to time series
+nyse <- ts(nyse, start = 1970, frequency = 12)
+ibm <- ts(ibm, start = 1970, frequency = 12)
+
+#Testing window (Until 2019)
+#calculate difference of each time series
+nyse_r <- (diff(nyse) / stats::lag(nyse, -1)) * 100
+ibm_r <- (diff(ibm) / stats::lag(ibm, -1)) * 100
+
+#Training window
+nyse_return <- window(nyse_r, end=c(2018,12))
+ibm_return <- window(ibm_r, end=c(2018,12))
+```
+
+## (a) Produce a time-series plot of your data including the respective ACF and PACF plots
+```{r}
+tsdisplay(nyse_return, main = "NYSE Stock Monthly Return")
+```
+
+Even though it's vague, we can see that for acf and pacf lag 6 is almost statistically significant and we want to account that by fitting ARMA(6,6) model.
+
+```{r}
+tsdisplay(ibm_return, main = "IBM Stock Monthly Return")
+```
+
+Statistically significant lag at 13 for both plots. Thus, can try to fit ARMA(13,13)
+
+To get a rough idea how the two series return move contemporaneously we try to plot is alongside each other. We will also normalize both series so that we can compare between the two of them.
+```{r}
+plot(nyse_return, main = "NYSE vs. IBM Stock Monthly Return", ylab = "Return", col = "red",
+     type = "l", ylim = c(-40,30))
+legend(x = "topleft", legend = c("NYSE","IBM"), col = c("red","blue"), lty=1:1, cex=0.8)
+lines(ibm_r, col = "blue")
+```
+
+## (b) Fit a model that includes, trend, seasonality and cyclical components. Make sure to discuss your model in detail.
+
+#### Periodic Trend
+Proposing our first fit to the model, that is, periodic since as we can see financial return looks like a random white noise and it seems to have fluctuation up and down
+```{r}
+#construct time component
+t <- seq(1970 + 1/12, 2018, length = length(nyse_return))
+
+ibm_mod_trend <- lm(ibm_return ~ I(sin(4*pi*t)) + I(cos(4*pi*t)))
+summary(ibm_mod_trend)
+```
+
+The result is not statistically significant, independently and jointly.
+
+```{r}
+plot(ibm_return, main = "IBM Return", col = "blue", ylab = "Return")
+legend(x = "topleft", legend = c("Periodic Trend","IBM"), col = c("dark green","blue"), lty=1:1, cex=0.8)
+lines(ibm_mod_trend$fitted.values ~ t, col = "dark green")
+```
+
+#### Seasonal Component
+```{r}
+ibm_mod_seasonal <- tslm(ibm_return ~ season)
+summary(ibm_mod_seasonal)
+```
+
+As a result, season 3, 6, 8, 9, 10 are all statistically significant with season 2, 5, 12 almost statistically significant. This indicates strong seasonality in our time series model.
+
+```{r}
+plot(ibm_return, main = "IBM Return", col = "blue", ylab = "Return")
+legend(x = "topleft", legend = c("Seasonal Fit","IBM"), col = c("dark green","blue"), lty=1:1, cex=0.8)
+lines(ibm_mod_seasonal$fitted.values ~ t, col = "dark green")
+```
+
+Try to break down the components
+```{r}
+ibm_dec <- decompose(ibm_return)
+autoplot(ibm_dec)
+```
+
+For our types of model, the more appropriate forecasting model is the garch model where we have to consider the error term ("remainder") as a component of our forecast.
+```{r}
+auto.arima(ibm_dec$random)
+```
+Hence we can fit it ARIMA(5,0,0) into the later model when we use GARCH.
+
+### Arma Trend, Seasonal, & Cyclical Component
+```{r}
+season_m <- seasonaldummy(ibm_return)
+ibm_mod_full <- Arima(ibm_return, order = c(5,0,0), seasonal=list(order=c(1,0,1), period = 12), xreg = cbind(t, sin(4*pi*t), cos(4*pi*t), season_m))
+summary(ibm_mod_full)
+```
+
+```{r}
+plot(ibm_return, main = "IBM Return & Full Model Fit", xlab = "Year", ylab = "IBM Return", col = "blue")
+legend(x = "topleft", legend = c("Full Fit","IBM"), col = c("dark green","blue"), lty=1:1, cex=0.8)
+lines(ibm_mod_full$fit, col = "dark green")
+```
+
+
+```{r}
+nyse_mod_full <- Arima(nyse_return, order=c(2,0,2), seasonal=list(order=c(1,0,1), period =12), xreg = cbind(t, sin(4*pi*t), cos(4*pi*t), season_m))
+summary(nyse_mod_full)
+```
+
+```{r}
+plot(nyse_return, main = "NYSE Return & Full Model Fit", xlab = "Year", ylab = "NYSE Return", col = "red")
+legend(x = "topleft", legend = c("Full Fit","NYSE"), col = c("dark green","red"), lty=1:1, cex=0.8)
+lines(nyse_mod_full$fit, col = "dark green")
+```
+
+## (c) Plot the respective residuals vs. fitted values and discuss your observations.
+```{r}
+#IBM return
+plot(ibm_mod_full$fitted, ibm_mod_full$residuals, pch=20, col="blue", lwd=1, main = "Residuals vs Fitted Values (IBM)", xlab="Fitted Values", ylab="Residuals")
+abline(h=0, lwd=2, col="black")
+```
+
+We can see that the residuals are normally distributed.
+
+```{r}
+#NYSE return
+plot(nyse_mod_full$fitted, nyse_mod_full$residuals, pch=20, col="red", lwd=1, main = "Residuals vs Fitted Values (NYSE)", xlab="Fitted Values", ylab="Residuals")
+abline(h=0, lwd=2, col="black")
+```
+
+For nyse, the residuals are also normally distributed. Hence no bias as time goes on.
+
+## (e) Plot the ACF and PACF of the respective residuals and interpret the plots.
+#### IBM Residuals
+```{r}
+tsdisplay(ibm_mod_full$residuals, main = "IBM Residuals")
+```
+
+The residuals are distributed as whihte noise even though there are some spikes that are significant
+
+We can test it using Box-Ljung test:
+```{r}
+Box.test(ibm_mod_full$residuals, type = "Ljung-Box")
+```
+We fail to reject the null hypothesis hence there isn't enough evidence that residuals are not white noise.
+
+#### NYSE Residuals
+```{r}
+tsdisplay(nyse_mod_full$residuals, main = "NYSE Residuals")
+```
+
+```{r}
+Box.test(nyse_mod_full$residuals, type = "Ljung-Box")
+```
+Also fail to reject the null hence we conclude that the residuals are white noise.
+
+## (f) Plot the respective CUSUM and interpret the plot.
+
+#### IBM CUSUM
+```{r}
+plot(efp(ibm_mod_full$residuals ~ 1))
+```
+
+#### NYSE CUSUM
+```{r}
+plot(efp(nyse_mod_full$residuals ~ 1))
+```
+
+Both CUSUM plot behave inside the line. Hence in the long run, the model should be fine and fit okay.
+
+## (g) Plot the respective Recursive Residuals and interpret the plot.
+#### IBM Recursive Residuals
+```{r}
+plot(recresid(ibm_mod_full$residuals ~ 1), main = "Recursive Residuals (IBM)", ylab = "Recres",
+     pch = 16, type = "l", col = "blue")
+```
+
+#### NYSE Recursive Residuals
+```{r}
+plot(recresid(nyse_mod_full$residuals ~ 1), main = "Recursive Residuals (NYSE)", ylab = "Recres",
+     pch = 16, type = "l", col = "red")
+```
+
+Both recursive residuals plot line are normally distributed hence the model is good for the fit and it does not break in the long run.
+
+## (h) For your model, discuss the associated diagnostic statistics.
+
+#### IBM diagnostic statistics
+```{r}
+summary(ibm_mod_full)
+accuracy(ibm_mod_full)
+```
+
+#### NYSE diagnostic statistics
+```{r}
+summary(nyse_mod_full)
+accuracy(nyse_mod_full)
+```
+
+Both models perform well in terms of r-squared and signifigance of coefficients. RMSE and MAPE also look decent for fit on training data, but better comparison will come with the introduction of more models later in the report.
+
+## (i) Use your model to forecast 12-steps ahead. Your forecast should include the respective error bands.
+#### IBM Forecast
+```{r}
+plot(forecast(ibm_mod_full$fitted, h=12), main = "12-Step Forecast of IBM Return", ylab = "IBM Return", xlab = "Year") # Overall looking at a glance
+
+plot(forecast(ibm_mod_full$fitted , h=12), xlim=c(2018, 2020), main = "12-Step Forecast of IBM Return", ylab = "IBM Return", xlab = "Year")
+```
+
+#### NYSE Forecast
+```{r}
+plot(forecast(nyse_mod_full$fitted, h=12), main = "12-Step Forecast of NYSE Return", ylab = "NYSE Return", xlab = "Year") # Overall looking at a glance
+
+plot(forecast(nyse_mod_full$fitted, h=12), xlim=c(2018, 2020), main = "12-Step Forecast of NYSE Return", ylab = "NYSE Return", xlab = "Year") # A closer look
+```
+
+## (j) Compare your forecast from (i) to the 12-steps ahead forecasts from ARIMA, Holt-Winters, and ETS models. Which model performs best in terms of MAPE?
+
+#### IBM Model Comparison
+```{r}
+# Generate ARIMA model automatically
+IBM_arima <- auto.arima(ibm_return)
+
+# Generate ets model
+IBM_ets <- ets(ibm_return)
+
+# Generate Holt-Winters model
+IBM_hw <- hw(ibm_return)
+
+# Forecast every model 12 steps ahead
+ibm_arima_fcast <- IBM_arima %>% forecast(12)
+ibm_ets_fcast <- IBM_ets %>% forecast(12)
+ibm_hw_fcast <- IBM_hw %>% forecast(12)
+ibm_own_fcast <- ibm_mod_full$fitted %>% forecast(12)
+
+accuracy(ibm_arima_fcast, ibm_r)
+accuracy(ibm_ets_fcast, ibm_r)
+accuracy(ibm_hw_fcast, ibm_r)
+accuracy(ibm_own_fcast, ibm_r)
+```
+
+#### NYSE Model Comparison
+```{r}
+# Generate ARIMA model automatically
+NYSE_arima <- auto.arima(nyse_return)
+
+# Generate ETS model
+NYSE_ets <- ets(nyse_return)
+
+# Generate Holt-Winters model
+NYSE_hw <- hw(nyse_return)
+
+# Forecast every model 12 steps ahead
+nyse_arima_fcast <- NYSE_arima %>% forecast(12)
+nyse_ets_fcast <- NYSE_ets %>% forecast(12)
+nyse_hw_fcast <- NYSE_hw %>% forecast(12)
+nyse_own_fcast <- nyse_mod_full$fitted %>% forecast(12)
+
+# Output a table of MAPE values and the respective model
+accuracy(nyse_arima_fcast, nyse_r)
+accuracy(nyse_ets_fcast, nyse_r)
+accuracy(nyse_hw_fcast, nyse_r)
+accuracy(nyse_own_fcast, nyse_r)
+```
+
+Our model performs best in terms of MAPE
+
+## (k) Combine the four forecasts and comment on the MAPE from this forecasts vs., the individual ones.
+```{r}
+combination.nyse <- (nyse_ets_fcast[["mean"]]+ nyse_arima_fcast[["mean"]]+ nyse_hw_fcast[["mean"]]+ nyse_own_fcast[["mean"]]) / 4
+autoplot(nyse_r) +
+autolayer(nyse_ets_fcast, series="ETS", PI=FALSE) + autolayer(nyse_arima_fcast, series="ARIMA", PI=FALSE) + autolayer(nyse_hw_fcast, series="HW", PI=FALSE) + autolayer(nyse_own_fcast, series="own model", PI=FALSE) + autolayer(combination.nyse, series="Combination") + xlab("Year") + ylab("price") + ggtitle("NYSE")
+
+
+ c(ETS = accuracy(nyse_ets_fcast, nyse_r)["Test set","MAPE"], ARIMA = accuracy(nyse_arima_fcast, nyse_r)["Test set","MAPE"], HW = accuracy(nyse_hw_fcast, nyse_r)["Test set","MAPE"],   Combination =  accuracy(combination.nyse,  nyse_r)["Test set","MAPE"])
+```
+
+```{r}
+combination.ibm <- (ibm_ets_fcast[["mean"]]+ ibm_arima_fcast[["mean"]]+ ibm_hw_fcast[["mean"]]+ ibm_own_fcast[["mean"]]) / 4
+autoplot(ibm_r) +
+autolayer(ibm_ets_fcast, series="ETS", PI=FALSE) + autolayer(ibm_arima_fcast, series="ARIMA", PI=FALSE) + autolayer(ibm_hw_fcast, series="HW", PI=FALSE) + autolayer(ibm_own_fcast, series="own model", PI=FALSE) + autolayer(combination.ibm, series="Combination") + xlab("Year") + ylab("price") + ggtitle("IBM")
+
+ c(ETS = accuracy(ibm_ets_fcast, ibm_r)["Test set","MAPE"], ARIMA = accuracy(ibm_arima_fcast, ibm_r)["Test set","MAPE"], HW = accuracy(ibm_hw_fcast, ibm_r)["Test set","MAPE"],   Combination =  accuracy(combination.ibm, ibm_r)["Test set","MAPE"])
+```
+The combination forecast perform better in forecasting. We need to take it into account when trying to forecast.
+
+## (l) Fit an appropriate VAR model using your two variables. Make sure to show the relevant plots and discuss your results from the fit.
+```{r}
+y <- cbind(nyse_r, ibm_r) 
+y_ts <- data.frame(y)
+VARselect(y_ts[-1,], lag.max = 10)
+```
+we can see that the lowest AIC is when p = 1 then we choose p = 1.
+
+```{r}
+y_model1=VAR(y_ts[-1,], p = 1)
+summary(y_model1)
+```
+From the results, when trying to explain NYSE using IBM, we only see a little to no significant. When trying to explain IBM using NYSE, we do not see any statisticaly significant parameter.
+
+## (m) Compute, plot, and interpret the respective impulse response functions.
+```{r}
+irf(y_model1)
+```
+
+The NYSE and IBM Index turn decays every year. 
+
+## (n) Perform a Granger-Causality test on your variables and discuss your results from the test.
+Granger causality test
+```{r}
+#H0: IBM does not cause NYSE (do not reject)
+grangertest(nyse_r ~ ibm_r, order = 1)
+```
+we fail to reject the null hence we cannot predict NYSE return using IBM return.
+
+```{r}
+#H0: NYSE does not cause IBM (do not reject)
+grangertest(ibm_r ~ nyse_r, order = 1)
+```
+we fail to reject the null hence we cannot predict IBM return using NYSE return.
+
+For this particular stock market return case, it is somehow logical since we cannot really predict stock market with just one component. There are a lot of little variable that can contribute to the stock market which is why if we only account for one stock to predict another, it would not work.
+
+## (o) Use your VAR model to forecast 12-steps ahead. Your forecast should include the respective error bands. Comment on the differences between the VAR forecast and the other ones obtained using the different methods.
+```{r}
+var.predict <- predict(object=y_model1, n.ahead=12)
+plot(var.predict)
+```
+```{r}
+plot(forecast(y, h=12))
+```
+
+## (p) Fit a GARCH model to the residuals from your favorite model, and produce a new 12-steps ahead forecast, including one for the variance.
+We use our NYSE index as our favorite model for the GARCH Model
+```{r}
+#load favorite model residuals
+nyse_resid <- NYSE_arima$residuals
+
+# load specification for garch model
+nyse_spec <- ugarchspec(
+  variance.model = list(model = "sGARCH", garchOrder = c(1, 1)),mean.model = nyse_mod_full,
+  distribution.model = "sstd")
+
+# Fit garch model for nyse data
+nyse_garch <- ugarchfit(spec = nyse_spec, data = nyse_return)
+
+# Forecast garch model
+nyse_garch_fcast <- ugarchforecast(nyse_garch, n.ahead = 12, n.roll = 0, out.sample = 0)
+
+plot(nyse_garch_fcast, which = 3)
+```
+
+
+# III. Conclusions and Future Work
+NYSE stock does not fully explained by IBM stock and it also works the other way around. One of the reason for is is that there are a lot of macroeconomics variable that might affect the fluctuation of both stocks, making it unpredictable. We have seen that stock market return cannot be easily predict with just fitting trend seasonality and cycle. One of the better ways to forecast it is using the GARCH model which solely analyze the remainder white noise part of the time series.
+
+# IV. References
+from 'quantmod' library using the getSymbols function to get the financial data. Most likely the data came from yahoo finance.
+IBM: https://finance.yahoo.com/quote/IBM?p=IBM&.tsrc=fin-srch-v1
+NYSE: https://finance.yahoo.com/quote/%5ENYA?p=^NYA&.tsrc=fin-srch
+
+# V. R Source Code
+In the R Code
